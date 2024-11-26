@@ -77,46 +77,37 @@ class WebSocketClient:
 
     def receive(self, first_byte=None):
         try:
-            print("Début de receive()")
             # Premier byte
             if first_byte:
                 fin = first_byte[0] & 0x80
                 opcode = first_byte[0] & 0x0F
-                print(f"Premier byte reçu: fin={fin}, opcode={opcode}")
             else:
                 first = self._read_exactly(1)
                 if not first:
                     return None
                 fin = first[0] & 0x80
                 opcode = first[0] & 0x0F
-                print(f"Premier byte lu: fin={fin}, opcode={opcode}")
-
+                
             # Deuxième byte
             second = self._read_exactly(1)
             if not second:
-                print("Pas de second byte")
                 return None
-            print("Second byte reçu")
-                
+            
             mask = second[0] & 0x80
             payload_length = second[0] & 0x7F
-            print(f"Mask: {mask}, Payload length: {payload_length}")
 
             # Gestion des longueurs étendues
             if payload_length == 126:
                 length_data = self._read_exactly(2)
                 if not length_data:
-                    print("Erreur lecture longueur 126")
                     return None
                 payload_length = int.from_bytes(length_data, 'big')
             elif payload_length == 127:
                 length_data = self._read_exactly(8)
                 if not length_data:
-                    print("Erreur lecture longueur 127")
                     return None
                 payload_length = int.from_bytes(length_data, 'big')
             
-            print(f"Longueur finale du payload: {payload_length}")
 
             # Lecture du masque si présent
             mask_bits = None
@@ -125,32 +116,26 @@ class WebSocketClient:
                 if not mask_bits:
                     print("Erreur lecture masque")
                     return None
-                print("Masque lu")
 
             # Lecture du payload
-            print(f"Lecture de {payload_length} octets de payload")
             payload = self._read_exactly(payload_length)
             if not payload:
                 print("Erreur lecture payload")
                 return None
-            print(f"Payload lu: {len(payload)} octets")
 
             # Démasquage si nécessaire
             if mask_bits:
                 payload = self._apply_mask(payload, mask_bits)
-                print("Payload démasqué")
 
             # Traitement selon l'opcode
             if opcode == 0x1:  # Text
                 try:
                     message = payload.decode('utf-8')
-                    print(f"Message décodé: {message}")
                     return message
                 except UnicodeError:
                     print("Erreur décodage UTF-8")
                     return None
             elif opcode == 0x9:  # Ping
-                print("Ping reçu")
                 self.send_pong()
                 return None
             elif opcode == 0x8:  # Close
