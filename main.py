@@ -13,6 +13,8 @@ WIFI_SSID = "Bbox-29B0DA0D"
 WIFI_PASSWORD = "MRY6fFwVx1KkbMuuqQ"
 WEBSOCKET_URL = "ws://192.168.1.99:8080/espFireplaceConnect"  # Remplacez par l'URL de votre serveur
 
+led=Pin(15,Pin.OUT)
+
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -72,13 +74,9 @@ def main():
                                     print("================")
                                     print(f"Message reçu: {message}")
                                     print("================")
-                                    try:
-                                        # Si le message est de la forme "valeur:123.45"
-                                        if ":" in message:
-                                            value = float(message.split(":")[-1].strip())
-                                            print(f"Valeur extraite: {value}")
-                                    except ValueError:
-                                        pass
+                                    led.value(1)
+                                    time.sleep(2)
+                                    led.value(0)
                     except OSError as e:
                         if e.args[0] != 11:  # Si ce n'est pas EAGAIN
                             raise
