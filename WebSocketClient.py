@@ -33,14 +33,24 @@ class WebSocketClient:
 
     def _read_exactly(self, num_bytes):
         data = bytearray()
-        while len(data) < num_bytes:
+        remaining = num_bytes
+        
+        while remaining > 0:
             try:
-                chunk = self.socket.recv(1)
-                if not chunk:
+                # Lire jusqu'à 1024 octets à la fois, ou moins s'il reste moins à lire
+                chunk_size = min(1024, remaining)
+                chunk = self.socket.recv(chunk_size)
+                
+                if not chunk:  # Connection fermée par le serveur
                     return None
+                    
                 data.extend(chunk)
-            except:
+                remaining -= len(chunk)
+                
+            except Exception as e:
+                print(f"Erreur de lecture: {e}")
                 return None
+                
         return data
         
     def connect(self):
@@ -84,17 +94,23 @@ class WebSocketClient:
             else:
                 first = self._read_exactly(1)
                 if not first:
+                    print("Erreur lecture premier byte")
                     return None
                 fin = first[0] & 0x80
                 opcode = first[0] & 0x0F
-                
+            
+            print(f"Opcode reçu: 0x{opcode:02x}")
+            
             # Deuxième byte
             second = self._read_exactly(1)
             if not second:
+                print("Erreur lecture deuxième byte")
                 return None
             
             mask = second[0] & 0x80
             payload_length = second[0] & 0x7F
+            
+            print(f"Longueur payload: {payload_length}")
 
             # Gestion des longueurs étendues
             if payload_length == 126:
@@ -107,7 +123,6 @@ class WebSocketClient:
                 if not length_data:
                     return None
                 payload_length = int.from_bytes(length_data, 'big')
-            
 
             # Lecture du masque si présent
             mask_bits = None
@@ -117,38 +132,53 @@ class WebSocketClient:
                     print("Erreur lecture masque")
                     return None
 
-            # Lecture du payload
-            payload = self._read_exactly(payload_length)
-            if not payload:
-                print("Erreur lecture payload")
-                return None
+            # Si longueur payload > 0, lire le payload
+            if payload_length > 0:
+                payload = self._read_exactly(payload_length)
+                if not payload:
+                    print("Erreur lecture payload")
+                    return None
 
-            # Démasquage si nécessaire
-            if mask_bits:
-                payload = self._apply_mask(payload, mask_bits)
+                if mask_bits:
+                    payload = self._apply_mask(payload, mask_bits)
+            else:
+                payload = b''  # Payload vide
 
             # Traitement selon l'opcode
-            if opcode == 0x1:  # Text
+            if opcode == 0x8:  # Close
+                print("Trame de fermeture reçue - Réinitialisation de la connexion")
+                self.close()
+                self.connect()  # Tentative de reconnexion
+                return None
+            elif opcode == 0x1:  # Text
                 try:
                     message = payload.decode('utf-8')
+                    print(f"Message reçu: {message}")
                     return message
                 except UnicodeError:
                     print("Erreur décodage UTF-8")
                     return None
             elif opcode == 0x9:  # Ping
                 self.send_pong()
-                return None
-            elif opcode == 0x8:  # Close
-                print("Trame de fermeture reçue")
-                self.close()
+                print("Ping reçu - Pong envoyé")
                 return None
             else:
-                print(f"Opcode non géré: {opcode}")
+                print(f"Opcode non géré: 0x{opcode:02x}")
                 return None
 
         except Exception as e:
             print(f"Erreur dans receive: {e}")
             return None
+    def _get_frame_type(self, opcode):
+        types = {
+            0x0: "Continuation",
+            0x1: "Text",
+            0x2: "Binary",
+            0x8: "Close",
+            0x9: "Ping",
+            0xA: "Pong"
+        }
+        return types.get(opcode, f"Unknown (0x{opcode:02x})")
 
     def send(self, data):
         if not self.connected:
