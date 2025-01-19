@@ -44,6 +44,29 @@ class WebSocketClient:
             masked[i] = data[i] ^ mask[i % 4]
         return masked
 
+    def _read_exactly(self, num_bytes):
+        """
+        Lit exactement num_bytes octets depuis la socket.
+        Si la connexion est interrompue, déclenche _on_disconnect().
+        """
+        data = bytearray()
+        remaining = num_bytes
+        while remaining > 0:
+            try:
+                chunk_size = min(1024, remaining)
+                chunk = self.socket.recv(chunk_size)
+                if not chunk:
+                    # Si le serveur a fermé la connexion
+                    self._on_disconnect()
+                    return None
+                data.extend(chunk)
+                remaining -= len(chunk)
+            except Exception as e:
+                print(f"Erreur de lecture: {e}")
+                self._on_disconnect()
+                return None
+        return data
+
     def connect(self):
         """
         Établit la connexion WebSocket avec le serveur.
@@ -109,40 +132,13 @@ class WebSocketClient:
                 print("Nouvel essai dans 5 secondes...")
                 time.sleep(5)
 
-    def _read_exactly(self, num_bytes):
-        data = bytearray()
-        remaining = num_bytes
-        while remaining > 0:
-            try:
-                chunk_size = min(1024, remaining)
-                chunk = self.socket.recv(chunk_size)
-                if not chunk:
-                    # Si le serveur a fermé la connexion
-                    self._on_disconnect()
-                    return None
-                data.extend(chunk)
-                remaining -= len(chunk)
-            except OSError as e:
-                # EAGAIN => on n'a juste pas de data pour l'instant
-                if e.args and e.args[0] == 11:  # EAGAIN
-                    # On peut décider de:
-                    # - retourner None (signifiant "pas de data dispo")
-                    # - ou lever une exception custom 
-                    return None
-                else:
-                    print(f"Erreur de lecture: {e}")
-                    self._on_disconnect()
-                    return None
-            except Exception as e:
-                print(f"Erreur de lecture: {e}")
-                self._on_disconnect()
-                return None
-        return data
-
-
     def receive(self, first_byte=None):
+        """
+        Lit un message depuis le WebSocket.
+        Si 'first_byte' est fourni, il est utilisé comme premier octet déjà lu.
+        """
         try:
-            # Lecture du premier octet
+            # --- Lecture du premier octet ---
             if first_byte:
                 fin = first_byte[0] & 0x80
                 opcode = first_byte[0] & 0x0F
@@ -153,7 +149,7 @@ class WebSocketClient:
                 fin = first[0] & 0x80
                 opcode = first[0] & 0x0F
 
-            # Lecture du deuxième octet
+            # --- Lecture du deuxième octet ---
             second = self._read_exactly(1)
             if not second:
                 return None
@@ -193,6 +189,7 @@ class WebSocketClient:
             if opcode == 0x8:  # Close
                 print("Trame de fermeture reçue (opcode=0x8).")
                 self.close()
+                # On relance la reconnexion
                 self._reconnect()
                 return None
 
@@ -212,14 +209,6 @@ class WebSocketClient:
                 # Autres opcodes (binaire, etc.) non gérés
                 return None
 
-        except OSError as e:
-            if e.args and e.args[0] == 11:
-                # EAGAIN => pas de data => pas de déconnexion
-                return None
-            else:
-                print(f"Erreur dans receive (OSError): {e}")
-                self._on_disconnect()
-                return None
         except Exception as e:
             print(f"Erreur dans receive: {e}")
             self._on_disconnect()

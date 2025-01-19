@@ -2,12 +2,13 @@ import network
 import time
 import gc
 from machine import Pin
+
 try:
     import uselect as select
 except ImportError:
     import select
 
-# Import de la classe WebSocketClient (version adaptée pour ignorer EAGAIN)
+# Import de la classe WebSocketClient (celle avec la reconnexion automatique)
 from WebSocketClient import WebSocketClient
 
 # Configuration WiFi
@@ -20,8 +21,7 @@ led = Pin(27, Pin.OUT)
 
 def connect_wifi():
     """
-    Tentative de connexion Wi-Fi en boucle,
-    sans limite stricte de temps, 
+    Connexion Wi-Fi en boucle sans limite de temps,
     pour éviter de quitter si le réseau est lent.
     """
     wlan = network.WLAN(network.STA_IF)
@@ -45,83 +45,96 @@ def connect_wifi():
 def main():
     gc.collect()
 
-    # 1) Connexion Wi-Fi en boucle
+    # 1) Connexion Wi-Fi
     if not connect_wifi():
         print("Impossible de continuer sans connexion WiFi")
         return
 
-    # 2) Instanciation du WebSocketClient
-    ws = WebSocketClient(WEBSOCKET_URL)
-    last_check_time = time.time()
+    # 2) Instanciation du client WebSocket
+    #    ping_interval=20 par exemple (ajustez si besoin).
+    ws = WebSocketClient(WEBSOCKET_URL, ping_interval=20)
+
+    # 3) Reconnexion automatique (boucle interne jusqu'à succès).
+    #    Cette méthode appelera 'connect()' et, en cas d'échec ou de déconnexion,
+    #    réessayera toutes les 5 secondes jusqu'à réussir.
+    ws._reconnect()
+
+    # Pour la lecture partielle, on passe le socket en non-bloquant.
+    # Note : à chaque reconnexion, le socket est recréé,
+    #        donc vous devrez éventuellement reconfigurer ce mode après chaque connect()
+    #        si vous avez besoin de conserver le non-bloquant dans tous les cas.
+    if ws.socket:
+        ws.socket.setblocking(False)
+
+    # Pour envoyer périodiquement un "ping" au serveur, on peut utiliser un timer
+    # ou simplement un check dans la boucle principale.
+    last_ping_time = time.time()
+    ping_interval = 15  # secondes
 
     try:
-        # 3) Première connexion au WebSocket
-        if ws.connect():
-            print("Connecté au serveur WebSocket")
-            # Socket en non-bloquant pour pouvoir faire recv(1)
-            ws.socket.setblocking(False)
-        else:
-            print("Échec de connexion au WebSocket.")
-            # Selon ta classe, si tu veux une reconnexion automatique,
-            # appelle ws._reconnect() ici:
-            # ws._reconnect()
-
         # 4) Boucle principale
         while True:
             current_time = time.time()
 
-            # Vérification fréquente des messages (toutes les 100 ms)
-            if (current_time - last_check_time) >= 0.1:
-                try:
-                    # Lecture d'un octet en non-bloquant
-                    data = ws.socket.recv(1)
-                    if data:
-                        # Repasser en bloquant pour lire tout le message
-                        ws.socket.setblocking(True)
-                        message = ws.receive(first_byte=data)
+            # Envoi d'un "ping" périodique
+            if (current_time - last_ping_time) >= ping_interval:
+                ws.send("ping")
+                last_ping_time = current_time
+
+            # Lecture partielle en non-bloquant
+            # On récupère 1 octet si disponible
+            try:
+                data = ws.socket.recv(1)
+                if data:
+                    # On repasse en mode bloquant le temps de lire le reste du message
+                    ws.socket.setblocking(True)
+                    message = ws.receive(first_byte=data)
+                    # On repasse en non-bloquant pour les lectures suivantes
+                    ws.socket.setblocking(False)
+
+                    if message:
+                        print(f"Message reçu : {message}")
+                        msg_lower = message.lower()
+
+                        # Réponse automatique aux pings
+                        if msg_lower == "ping":
+                            ws.send("pong")
+
+                        # Commandes d’allumage
+                        if msg_lower == "allumer":
+                            led.value(1)
+
+                        if msg_lower == "turn_on_bougie":
+                            led.value(1)
+                            # Envoi d'un message particulier au serveur ou autre action
+                            ws.send("ipadRoberto:play_video_bougie")
+
+            except OSError as e:
+                # Erreur EAGAIN => rien de disponible => on ignore
+                # Autres erreurs => on relance la connexion
+                if e.args and e.args[0] != 11:
+                    print("Erreur socket inattendue :", e)
+                    # On signale la déconnexion pour forcer la reconnexion
+                    ws._on_disconnect()
+                    # Après _on_disconnect(), ws._reconnect() est appelé et
+                    # un nouveau socket est créé. On peut en profiter pour le repasser
+                    # en non-bloquant si nécessaire :
+                    if ws.socket:
                         ws.socket.setblocking(False)
 
-                        if message:
-                            # Répondre au ping du serveur
-                            
-                            if message.lower() == "ping":
-                                ws.send("pong")
-
-                            # Commandes reconnues
-                            if message.lower() == "allumer":
-                                print(message.lower())
-                                led.value(1)
-
-                            if message.lower() == "turn_on_bougie":
-                                print(message.lower())
-                                led.value(1)
-                                ws.send("ipadRoberto:play_video_bougie")
-
-                except OSError as e:
-                    # e.args[0] == 11 => EAGAIN => on ignore
-                    # toute autre erreur => on la relance ou on force une reconnexion
-                    if e.args and e.args[0] != 11:
-                        print("Erreur socket inattendue :", e)
-                        # Ici, tu peux décider de relancer la connexion :
-                        # ws._on_disconnect() ou ws._reconnect()
-                        # Ou simplement raise pour planter et voir l'erreur
-                        raise
-
-                last_check_time = current_time
-
-            # Mini pause pour éviter la surcharge CPU
-            time.sleep(0.001)
+            # Petite pause pour réduire la charge CPU
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
-        print("Arrêt demandé par l'utilisateur")
+        print("Arrêt demandé par l'utilisateur.")
 
     except Exception as e:
-        print(f"Erreur: {e}")
+        print(f"Erreur inattendue: {e}")
 
     finally:
         if ws:
             ws.close()
-            print("Connexion WebSocket fermée")
+            print("Connexion WebSocket fermée.")
 
 if __name__ == "__main__":
     main()
